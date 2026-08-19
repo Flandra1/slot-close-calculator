@@ -1,0 +1,132 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slot闭店减算快速判断 v3</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;background:#101112;color:#f3f4f6;margin:0;padding:16px}
+.wrap{max-width:860px;margin:auto}.card{background:#1a1b1d;border:1px solid #33363a;border-radius:14px;padding:14px;margin-bottom:14px}
+h1{font-size:22px;margin:0 0 7px}.sub{color:#a5acb5;font-size:13px;line-height:1.55;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:620px){.grid{grid-template-columns:1fr}}
+label{display:block;color:#a5acb5;font-size:12px;margin-bottom:5px}
+input,select,button{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #33363a;background:#0f1012;color:#fff;font-size:16px}
+button{background:#eee;color:#111;font-weight:800;margin-top:12px;border:none}
+.typehint{font-size:12px;color:#8fa2b3;line-height:1.45;margin-top:5px;min-height:34px}
+.res{display:grid;grid-template-columns:1fr 1fr;gap:10px}.metric{background:#111315;border:1px solid #33363a;border-radius:11px;padding:11px}
+.k{font-size:12px;color:#a5acb5}.v{font-size:21px;font-weight:800;margin-top:5px}.wide{grid-column:1/-1}
+.good{color:#78e39a}.warn{color:#ffd66b}.bad{color:#ff9494}.note{color:#a5acb5;font-size:12px;line-height:1.55;margin-top:10px}
+table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{padding:7px 4px;border-bottom:1px solid #33363a;text-align:right}th:first-child,td:first-child{text-align:left}
+</style></head><body><div class="wrap">
+<h1>Slot 闭店减算快速判断 v3</h1>
+<div class="sub">闭店前约50～90分钟快速判断。网站正常期待值作为锚点；程序只估算闭店减算。</div>
+
+<div class="card"><div class="grid">
+<div><label>网站正常期待值（円）</label><input id="siteEV" type="number" value="6000"></div>
+<div><label>距离闭店（分钟）</label><input id="mins" type="number" value="60"></div>
+<div><label>当前G</label><input id="cur" type="number" value="1000"></div>
+<div><label>天井G</label><input id="ceil" type="number" value="1200"></div>
+<div><label>保守初当 1/N（AT后0G附近）</label><input id="Nslow" type="number" value="400"></div>
+<div><label>乐观初当 1/N（当前G档）</label><input id="Nfast" type="number" value="100"></div>
+<div><label>Base（G/50枚）</label><input id="base" type="number" step="0.1" value="31"></div>
+<div><label>前兆/准备额外G</label><input id="extra" type="number" value="32"></div>
+<div><label>转速（G/h）</label><input id="speed" type="number" value="800"></div>
+<div><label>平均出玉（枚）</label><input id="avg" type="number" value="500"></div>
+<div><label>出玉类型（选择接近机种）</label>
+<select id="ptype" onchange="updateHint()">
+<option value="standard">平稳型</option><option value="tail">荒型</option><option value="oneshot">超荒型</option><option value="large">大出玉型</option>
+</select><div class="typehint" id="typehint"></div></div>
+<div><label>纯增（枚/G）</label><input id="net" type="number" step="0.1" value="3.0"></div>
+<div><label>天井恩惠</label>
+<select id="ceilingBonus"><option value="none">无 / 很弱</option><option value="mid">中等</option><option value="strong">强</option></select>
+<div class="typehint">中等≈平均1.4倍；强≈平均1.84倍，并让长尾更厚。</div></div>
+</div><button onclick="run()">计算</button></div>
+
+<div class="card"><div class="res">
+<div class="metric"><div class="k">正常EV</div><div class="v" id="o1">—</div></div>
+<div class="metric"><div class="k">减算中央值</div><div class="v" id="o2">—</div></div>
+<div class="metric"><div class="k">推定减算范围</div><div class="v" id="o3">—</div></div>
+<div class="metric"><div class="k">闭店后EV范围</div><div class="v" id="o4">—</div></div>
+<div class="metric wide"><div class="k">保守判断</div><div class="v" id="o5">—</div></div>
+</div>
+<table><thead><tr><th>模型</th><th>初当</th><th>模型正常EV</th><th>模型闭店EV</th><th>减算</th></tr></thead><tbody id="tb"></tbody></table>
+<div class="note">模型正常EV仅用于和同一模型下的闭店EV做差。最终结果使用：网站EV − 模型闭店减算。4种出玉类型按实际出玉特征划分：平稳 / 荒 / 超荒 / 大出玉，并参考你提供的真实机种分布做粗模板。</div>
+</div></div>
+
+<script>
+const templates={
+standard:[[0.26,.41],[0.76,.30],[1.26,.14],[1.76,.07],[2.26,.035],[3.0,.020],[4.2,.010],[7.0,.005]],
+tail:[[0.22,.46],[0.68,.25],[1.18,.12],[1.85,.07],[2.8,.040],[4.2,.025],[6.5,.020],[10.0,.015]],
+oneshot:[[0.18,.50],[0.58,.20],[1.05,.10],[1.8,.065],[3.0,.050],[5.0,.035],[8.0,.030],[13.0,.020]],
+large:[[0.48,.12],[0.75,.22],[1.00,.26],[1.35,.17],[1.8,.10],[2.6,.065],[4.0,.040],[7.0,.025]]
+};
+const hints={
+standard:"平稳型：大多数初当在千枚以内结束，长尾较薄。例：北斗、モンキーV、SAO。",
+tail:"荒型：通常出玉不算特别大，但有上位/长连，偶尔会明显拉长消化时间。例：無職転生、乙女5、新鬼武者。",
+oneshot:"超荒型：上位极强，少数样本会出现数千枚级超长尾，对闭店减算影响很大。例：からくりサーカス、ToLOVEる、ゴブスレ2。",
+large:"大出玉型：平均出玉或最低/基础保证枚数较高，普通一次初当本身就偏大。例：吉宗、沖ドキ系、星矢、炎炎。"
+};
+function updateHint(){document.getElementById("typehint").textContent=hints[document.getElementById("ptype").value]}
+function normalizedDist(type,mean){
+  const a=templates[type], rm=a.reduce((s,x)=>s+x[0]*x[1],0), sc=mean/rm;
+  return a.map(x=>[x[0]*sc,x[1]]);
+}
+function heavier(type){if(type==="standard")return"tail";if(type==="tail")return"oneshot";return type}
+function ceilingCfg(level,type){
+  if(level==="none")return{mult:1,type};
+  if(level==="mid")return{mult:1.4,type};
+  return{mult:1.84,type:heavier(type)};
+}
+function payoutValue(rem,d,speed,net){
+  if(rem<=0)return 0;
+  const cap=rem*speed/60*net;
+  return d.reduce((s,x)=>s+Math.min(x[0],cap)*x[1],0);
+}
+function model(a,N){
+  const D=a.ceil-a.cur;if(D<=0)throw Error("当前G必须小于天井G");
+  const p=1/N,q=1-p,cpg=50/a.base,play=a.mins*a.speed/60;
+  const nd=normalizedDist(a.ptype,a.avg), cb=ceilingCfg(a.ceilingBonus,a.ptype), cd=normalizedDist(cb.type,a.avg*cb.mult);
+  let nr=0,ni=0,cr=0,ci=0,psum=0;
+  for(let k=1;k<D;k++){
+    const pr=Math.pow(q,k-1)*p;psum+=pr;
+    nr+=pr*a.avg;ni+=pr*(k+a.extra)*cpg;
+    if(k>play){ci+=pr*play*cpg;continue;}
+    const ig=Math.min(k+a.extra,play), rem=a.mins-(k+a.extra)/a.speed*60;
+    ci+=pr*ig*cpg;cr+=pr*payoutValue(rem,nd,a.speed,a.net);
+  }
+  const cp=Math.max(0,1-psum),k=D;
+  nr+=cp*(a.avg*cb.mult);ni+=cp*(k+a.extra)*cpg;
+  if(k>play)ci+=cp*play*cpg;
+  else{
+    const ig=Math.min(k+a.extra,play), rem=a.mins-(k+a.extra)/a.speed*60;
+    ci+=cp*ig*cpg;cr+=cp*payoutValue(rem,cd,a.speed,a.net);
+  }
+  return{nev:nr-ni,cev:cr-ci,loss:Math.max(0,(nr-ni)-(cr-ci))};
+}
+function yen(x){return(x>=0?"+":"")+Math.round(x).toLocaleString()+"円"}
+function yp(x){return Math.round(x).toLocaleString()+"円"}
+function run(){
+  try{
+    const a={
+      siteEV:+document.getElementById("siteEV").value,mins:+document.getElementById("mins").value,cur:+document.getElementById("cur").value,
+      ceil:+document.getElementById("ceil").value,Nslow:+document.getElementById("Nslow").value,Nfast:+document.getElementById("Nfast").value,
+      base:+document.getElementById("base").value,extra:+document.getElementById("extra").value,speed:+document.getElementById("speed").value,
+      avg:+document.getElementById("avg").value,ptype:document.getElementById("ptype").value,net:+document.getElementById("net").value,
+      ceilingBonus:document.getElementById("ceilingBonus").value
+    };
+    const fastN=Math.min(a.Nfast,a.Nslow),slowN=Math.max(a.Nfast,a.Nslow);
+    const op=model(a,fastN),co=model(a,slowN);
+    const l1=op.loss*20,l2=co.loss*20,lmin=Math.min(l1,l2),lmax=Math.max(l1,l2),lmid=(lmin+lmax)/2;
+    const worst=a.siteEV-lmax,best=a.siteEV-lmin;
+    document.getElementById("o1").textContent=yen(a.siteEV);
+    document.getElementById("o2").textContent="−"+yp(lmid);
+    document.getElementById("o3").textContent=yp(lmin)+" ～ "+yp(lmax);
+    document.getElementById("o4").textContent=yen(worst)+" ～ "+yen(best);
+    const d=document.getElementById("o5");d.className="v";
+    if(worst>=1500){d.textContent="可打（保守端仍明显为正）";d.classList.add("good")}
+    else if(worst>=500){d.textContent="偏可打";d.classList.add("good")}
+    else if(worst>-500){d.textContent="边缘";d.classList.add("warn")}
+    else{d.textContent="不建议";d.classList.add("bad")}
+    document.getElementById("tb").innerHTML=[
+      ["乐观","1/"+Math.round(fastN),op],["保守","1/"+Math.round(slowN),co]
+    ].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${yen(r[2].nev*20)}</td><td>${yen(r[2].cev*20)}</td><td>−${yp(r[2].loss*20)}</td></tr>`).join("");
+  }catch(e){alert(e.message)}
+}
+updateHint();run();
+</script></body></html>
