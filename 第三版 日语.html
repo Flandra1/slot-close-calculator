@@ -1,0 +1,132 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>スロット 閉店減算クイック判定 v3</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:#101112;color:#f3f4f6;margin:0;padding:16px}
+.wrap{max-width:860px;margin:auto}.card{background:#1a1b1d;border:1px solid #33363a;border-radius:14px;padding:14px;margin-bottom:14px}
+h1{font-size:22px;margin:0 0 7px}.sub{color:#a5acb5;font-size:13px;line-height:1.55;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:620px){.grid{grid-template-columns:1fr}}
+label{display:block;color:#a5acb5;font-size:12px;margin-bottom:5px}
+input,select,button{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #33363a;background:#0f1012;color:#fff;font-size:16px}
+button{background:#eee;color:#111;font-weight:800;margin-top:12px;border:none}
+.typehint{font-size:12px;color:#8fa2b3;line-height:1.45;margin-top:5px;min-height:34px}
+.res{display:grid;grid-template-columns:1fr 1fr;gap:10px}.metric{background:#111315;border:1px solid #33363a;border-radius:11px;padding:11px}
+.k{font-size:12px;color:#a5acb5}.v{font-size:21px;font-weight:800;margin-top:5px}.wide{grid-column:1/-1}
+.good{color:#78e39a}.warn{color:#ffd66b}.bad{color:#ff9494}.note{color:#a5acb5;font-size:12px;line-height:1.55;margin-top:10px}
+table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{padding:7px 4px;border-bottom:1px solid #33363a;text-align:right}th:first-child,td:first-child{text-align:left}
+</style></head><body><div class="wrap">
+<h1>スロット 閉店減算クイック判定 v3</h1>
+<div class="sub">閉店前およそ50～90分のクイック判定用。サイト等の通常期待値を基準にし、このツールでは閉店による減算分のみを推定します。</div>
+
+<div class="card"><div class="grid">
+<div><label>通常時の期待値（円）</label><input id="siteEV" type="number" value="6000"></div>
+<div><label>閉店まで（分）</label><input id="mins" type="number" value="60"></div>
+<div><label>現在G</label><input id="cur" type="number" value="1000"></div>
+<div><label>天井G</label><input id="ceil" type="number" value="1200"></div>
+<div><label>保守側 初当り 1/N（AT後0G付近）</label><input id="Nslow" type="number" value="400"></div>
+<div><label>楽観側 初当り 1/N（現在G帯）</label><input id="Nfast" type="number" value="100"></div>
+<div><label>ベース（G/50枚）</label><input id="base" type="number" step="0.1" value="31"></div>
+<div><label>前兆・準備の追加G</label><input id="extra" type="number" value="32"></div>
+<div><label>消化速度（G/h）</label><input id="speed" type="number" value="800"></div>
+<div><label>平均獲得枚数（枚）</label><input id="avg" type="number" value="500"></div>
+<div><label>出玉タイプ（近いものを選択）</label>
+<select id="ptype" onchange="updateHint()">
+<option value="standard">安定型</option><option value="tail">荒波型</option><option value="oneshot">超荒波型</option><option value="large">高出玉型</option>
+</select><div class="typehint" id="typehint"></div></div>
+<div><label>純増（枚/G）</label><input id="net" type="number" step="0.1" value="3.0"></div>
+<div><label>天井恩恵</label>
+<select id="ceilingBonus"><option value="none">なし / 弱い</option><option value="mid">中程度</option><option value="strong">強い</option></select>
+<div class="typehint">中程度＝平均約1.4倍、強い＝平均約1.84倍＋ロングテールをやや厚めに補正。</div></div>
+</div><button onclick="run()">計算</button></div>
+
+<div class="card"><div class="res">
+<div class="metric"><div class="k">通常EV</div><div class="v" id="o1">—</div></div>
+<div class="metric"><div class="k">減算中央値</div><div class="v" id="o2">—</div></div>
+<div class="metric"><div class="k">推定減算レンジ</div><div class="v" id="o3">—</div></div>
+<div class="metric"><div class="k">閉店後EVレンジ</div><div class="v" id="o4">—</div></div>
+<div class="metric wide"><div class="k">保守判定</div><div class="v" id="o5">—</div></div>
+</div>
+<table><thead><tr><th>モデル</th><th>初当り</th><th>モデル通常EV</th><th>モデル閉店EV</th><th>減算</th></tr></thead><tbody id="tb"></tbody></table>
+<div class="note">モデル通常EVは、同一モデル内で閉店EVとの差分を取るためだけに使用します。最終結果は「通常期待値 − モデル上の閉店減算」で算出します。4つの出玉タイプは実際の出玉特性をもとに、安定 / 荒波 / 超荒波 / 高出玉に分けた簡易テンプレートです。</div>
+</div></div>
+
+<script>
+const templates={
+standard:[[0.26,.41],[0.76,.30],[1.26,.14],[1.76,.07],[2.26,.035],[3.0,.020],[4.2,.010],[7.0,.005]],
+tail:[[0.22,.46],[0.68,.25],[1.18,.12],[1.85,.07],[2.8,.040],[4.2,.025],[6.5,.020],[10.0,.015]],
+oneshot:[[0.18,.50],[0.58,.20],[1.05,.10],[1.8,.065],[3.0,.050],[5.0,.035],[8.0,.030],[13.0,.020]],
+large:[[0.48,.12],[0.75,.22],[1.00,.26],[1.35,.17],[1.8,.10],[2.6,.065],[4.0,.040],[7.0,.025]]
+};
+const hints={
+standard:"安定型：大半の初当りが1000枚以内で終わり、ロングテールが比較的薄いタイプ。例：北斗、モンキーV、SAO。",
+tail:"荒波型：通常の出玉は極端に大きくないものの、上位ATやロング継続で時々消化時間が大きく伸びるタイプ。例：無職転生、乙女5、新鬼武者。",
+oneshot:"超荒波型：上位ATが非常に強く、少数ながら数千枚級の超ロングテールがあり、閉店減算の影響が大きいタイプ。例：からくりサーカス、ToLOVEる、ゴブスレ2。",
+large:"高出玉型：平均獲得枚数や最低・基礎保証枚数が高く、通常の初当り1回あたりの出玉自体が大きめのタイプ。例：吉宗、沖ドキ系、星矢、炎炎。"
+};
+function updateHint(){document.getElementById("typehint").textContent=hints[document.getElementById("ptype").value]}
+function normalizedDist(type,mean){
+  const a=templates[type], rm=a.reduce((s,x)=>s+x[0]*x[1],0), sc=mean/rm;
+  return a.map(x=>[x[0]*sc,x[1]]);
+}
+function heavier(type){if(type==="standard")return"tail";if(type==="tail")return"oneshot";return type}
+function ceilingCfg(level,type){
+  if(level==="none")return{mult:1,type};
+  if(level==="mid")return{mult:1.4,type};
+  return{mult:1.84,type:heavier(type)};
+}
+function payoutValue(rem,d,speed,net){
+  if(rem<=0)return 0;
+  const cap=rem*speed/60*net;
+  return d.reduce((s,x)=>s+Math.min(x[0],cap)*x[1],0);
+}
+function model(a,N){
+  const D=a.ceil-a.cur;if(D<=0)throw Error("現在Gは天井Gより小さくしてください");
+  const p=1/N,q=1-p,cpg=50/a.base,play=a.mins*a.speed/60;
+  const nd=normalizedDist(a.ptype,a.avg), cb=ceilingCfg(a.ceilingBonus,a.ptype), cd=normalizedDist(cb.type,a.avg*cb.mult);
+  let nr=0,ni=0,cr=0,ci=0,psum=0;
+  for(let k=1;k<D;k++){
+    const pr=Math.pow(q,k-1)*p;psum+=pr;
+    nr+=pr*a.avg;ni+=pr*(k+a.extra)*cpg;
+    if(k>play){ci+=pr*play*cpg;continue;}
+    const ig=Math.min(k+a.extra,play), rem=a.mins-(k+a.extra)/a.speed*60;
+    ci+=pr*ig*cpg;cr+=pr*payoutValue(rem,nd,a.speed,a.net);
+  }
+  const cp=Math.max(0,1-psum),k=D;
+  nr+=cp*(a.avg*cb.mult);ni+=cp*(k+a.extra)*cpg;
+  if(k>play)ci+=cp*play*cpg;
+  else{
+    const ig=Math.min(k+a.extra,play), rem=a.mins-(k+a.extra)/a.speed*60;
+    ci+=cp*ig*cpg;cr+=cp*payoutValue(rem,cd,a.speed,a.net);
+  }
+  return{nev:nr-ni,cev:cr-ci,loss:Math.max(0,(nr-ni)-(cr-ci))};
+}
+function yen(x){return(x>=0?"+":"")+Math.round(x).toLocaleString()+"円"}
+function yp(x){return Math.round(x).toLocaleString()+"円"}
+function run(){
+  try{
+    const a={
+      siteEV:+document.getElementById("siteEV").value,mins:+document.getElementById("mins").value,cur:+document.getElementById("cur").value,
+      ceil:+document.getElementById("ceil").value,Nslow:+document.getElementById("Nslow").value,Nfast:+document.getElementById("Nfast").value,
+      base:+document.getElementById("base").value,extra:+document.getElementById("extra").value,speed:+document.getElementById("speed").value,
+      avg:+document.getElementById("avg").value,ptype:document.getElementById("ptype").value,net:+document.getElementById("net").value,
+      ceilingBonus:document.getElementById("ceilingBonus").value
+    };
+    const fastN=Math.min(a.Nfast,a.Nslow),slowN=Math.max(a.Nfast,a.Nslow);
+    const op=model(a,fastN),co=model(a,slowN);
+    const l1=op.loss*20,l2=co.loss*20,lmin=Math.min(l1,l2),lmax=Math.max(l1,l2),lmid=(lmin+lmax)/2;
+    const worst=a.siteEV-lmax,best=a.siteEV-lmin;
+    document.getElementById("o1").textContent=yen(a.siteEV);
+    document.getElementById("o2").textContent="−"+yp(lmid);
+    document.getElementById("o3").textContent=yp(lmin)+" ～ "+yp(lmax);
+    document.getElementById("o4").textContent=yen(worst)+" ～ "+yen(best);
+    const d=document.getElementById("o5");d.className="v";
+    if(worst>=1500){d.textContent="打てる（保守側でも明確にプラス）";d.classList.add("good")}
+    else if(worst>=500){d.textContent="やや打てる";d.classList.add("good")}
+    else if(worst>-500){d.textContent="ボーダー付近";d.classList.add("warn")}
+    else{d.textContent="見送り推奨";d.classList.add("bad")}
+    document.getElementById("tb").innerHTML=[
+      ["楽観","1/"+Math.round(fastN),op],["保守","1/"+Math.round(slowN),co]
+    ].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${yen(r[2].nev*20)}</td><td>${yen(r[2].cev*20)}</td><td>−${yp(r[2].loss*20)}</td></tr>`).join("");
+  }catch(e){alert(e.message)}
+}
+updateHint();run();
+</script></body></html>
